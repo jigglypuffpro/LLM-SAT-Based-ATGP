@@ -160,7 +160,7 @@ def generate_fault_list(gates: List[Gate]) -> List[Tuple[str, int]]:
     return faults
 
 
-def run_atpg_all_faults(bench_filename: str) -> None:
+def run_atpg_all_faults(bench_filename: str) -> Dict[str, float]:
     this_dir = os.path.dirname(os.path.abspath(__file__))
     bench_path = os.path.join(this_dir, "..", "Benchmarks", bench_filename)
 
@@ -204,16 +204,24 @@ def run_atpg_all_faults(bench_filename: str) -> None:
 
     end_all = time.time()
 
-    print(f"Benchmark: {bench_filename}")
-    print("Detected faults:", detected)
-    print("Total faults:", len(faults))
-    print(f"Total wall time (s): {end_all - start_all:.3f}")
-    print(f"Total SAT time (s): {total_sat_time:.3f}")
-    if faults:
-        print(f"Avg decisions per fault: {total_decisions / len(faults):.2f}")
-        print(f"Avg conflicts per fault: {total_conflicts / len(faults):.2f}")
+    result: Dict[str, float] = {
+        "benchmark": bench_filename,
+        "detected_faults": float(detected),
+        "total_faults": float(len(faults)),
+        "wall_time": end_all - start_all,
+        "sat_time": total_sat_time,
+        "avg_decisions": (total_decisions / len(faults)) if faults else 0.0,
+        "avg_conflicts": (total_conflicts / len(faults)) if faults else 0.0,
+    }
+
+    # Lightweight per-benchmark summary
+    print(
+        f"{bench_filename}: detected {detected}/{len(faults)} "
+        f"(wall {result['wall_time']:.3f}s, SAT {result['sat_time']:.3f}s)"
+    )
+
+    return result
 
 
 if __name__ == "__main__":
-    # Example: run full ATPG on c432
     run_atpg_all_faults("c432.v")
