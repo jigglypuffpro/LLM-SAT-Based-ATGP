@@ -1,5 +1,6 @@
 from typing import Dict, List, Tuple
 import os
+import time
 
 from pysat.solvers import Minisat22
 
@@ -13,7 +14,7 @@ from cnf_encoder import (
 )
 
 
-def parse_c432_verilog(path: str) -> Tuple[List[Gate], List[str], List[str]]:
+def parse_iscas_verilog(path: str) -> Tuple[List[Gate], List[str], List[str]]:
     gates: List[Gate] = []
     primary_inputs: List[str] = []
     primary_outputs: List[str] = []
@@ -112,7 +113,7 @@ def solve_single_fault_on_c432() -> None:
     this_dir = os.path.dirname(os.path.abspath(__file__))
     bench_path = os.path.join(this_dir, "..", "Benchmarks", "c432.v")
 
-    gates, primary_inputs, primary_outputs = parse_c432_verilog(bench_path)
+    gates, primary_inputs, primary_outputs = parse_iscas_verilog(bench_path)
 
     # Example: test N223 stuck-at-0
     fault_signal = "N223"
@@ -159,14 +160,19 @@ def generate_fault_list(gates: List[Gate]) -> List[Tuple[str, int]]:
     return faults
 
 
-def run_atpg_all_faults_on_c432() -> None:
+def run_atpg_all_faults(bench_filename: str) -> None:
     this_dir = os.path.dirname(os.path.abspath(__file__))
-    bench_path = os.path.join(this_dir, "..", "Benchmarks", "c432.v")
+    bench_path = os.path.join(this_dir, "..", "Benchmarks", bench_filename)
 
-    gates, primary_inputs, primary_outputs = parse_c432_verilog(bench_path)
+    gates, primary_inputs, primary_outputs = parse_iscas_verilog(bench_path)
     faults = generate_fault_list(gates)
 
     detected = 0
+    total_decisions = 0
+    total_conflicts = 0
+    total_sat_time = 0.0
+
+    start_all = time.time()
 
     for signal, sa_val in faults:
         cnf, var_map = build_cnf_for_fault(
@@ -181,17 +187,33 @@ def run_atpg_all_faults_on_c432() -> None:
         for clause in cnf:
             solver.add_clause(clause)
 
+        t0 = time.time()
         sat = solver.solve()
+        t1 = time.time()
+
+        stats = solver.accum_stats()
+        decisions = stats.get("decisions", 0)
+        conflicts = stats.get("conflicts", 0)
+
+        total_sat_time += (t1 - t0)
+        total_decisions += decisions
+        total_conflicts += conflicts
+
         if sat:
             detected += 1
 
+    end_all = time.time()
+
+    print(f"Benchmark: {bench_filename}")
     print("Detected faults:", detected)
     print("Total faults:", len(faults))
+    print(f"Total wall time (s): {end_all - start_all:.3f}")
+    print(f"Total SAT time (s): {total_sat_time:.3f}")
+    if faults:
+        print(f"Avg decisions per fault: {total_decisions / len(faults):.2f}")
+        print(f"Avg conflicts per fault: {total_conflicts / len(faults):.2f}")
 
 
 if __name__ == "__main__":
-    #solve_single_fault_on_c432()
-    run_atpg_all_faults_on_c432()
-
-#solve_single_fault_on_c432() gives you a test pattern for one chosen fault.
-#run_atpg_all_faults_on_c432() can give you fault coverage statistics, which you’ll later compare against the LLM‑guided version.
+    # Example: run full ATPG on c432
+    run_atpg_all_faults("c432.v")
