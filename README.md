@@ -56,6 +56,18 @@ Edit the last line in `src/sat_atpg_demo.py` and run:
 python src/sat_atpg_demo.py
 ```
 
+## MiniSat22 Heuristics Overview
+
+MiniSat22 uses several important heuristics to efficiently solve SAT problems.
+
+| Heuristic | Description | Purpose |
+|---|---|---|
+| **VSIDS (Variable State Independent Decaying Sum)** | Assigns scores to variables based on conflict participation | Chooses the next decision variable |
+| **First-UIP (First Unique Implication Point)** | Identifies a key point in the implication graph during conflict analysis | Generates effective learned clauses |
+| **Non-chronological backtracking** | Backtracks to the most relevant decision level instead of the previous one | Skips irrelevant search levels |
+| **Restart strategy** | Periodically restarts the solver while keeping learned clauses | Helps escape difficult search regions |
+| **Clause deletion** | Removes less useful learned clauses | Keeps the clause database manageable |
+
 ### Notes / current limitations
 - **Miter uses only the first primary output** (`primary_outputs[0]`) for now.
 - The Verilog parser is tailored to these ISCAS-style gate-instance netlists (not general RTL).
