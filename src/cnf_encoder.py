@@ -46,15 +46,23 @@ def encode_not(cnf: CNF, out: int, a: int) -> None:
     cnf.append([a, out])
 
 
+def encode_buf(cnf: CNF, out: int, a: int) -> None:
+    # out = a
+    cnf.append([-a, out])
+    cnf.append([a, -out])
+
+
 def encode_nand_n(cnf: CNF, out: int, inputs: List[int]) -> None:
     # out <-> NAND over inputs = NOT(AND)
-    # Constraints for y = ¬(x1 ∧ ... ∧ xn):
-    # (xi ∨ y) for all i, and (¬y ∨ ¬x1 ∨ ... ∨ ¬xn)
+    # For y = ¬(x1 ∧ ... ∧ xn), correct CNF is:
+    # (¬y ∨ ¬x1 ∨ ... ∨ ¬xn) ∧ ∧i (¬xi ∨ y)
     if len(inputs) == 0:
         return
-    for x in inputs:
-        cnf.append([x, out])
+    # (¬y ∨ ¬x1 ∨ ... ∨ ¬xn)
     cnf.append([-out] + [-(x) for x in inputs])
+    # (¬xi ∨ y) for all i
+    for x in inputs:
+        cnf.append([-x, out])
 
 
 def encode_nor_n(cnf: CNF, out: int, inputs: List[int]) -> None:
@@ -97,6 +105,9 @@ def encode_gate(
     elif gtype == "NOT":
         assert len(in_vars) == 1
         encode_not(cnf, out_var, in_vars[0])
+    elif gtype == "BUF":
+        assert len(in_vars) == 1
+        encode_buf(cnf, out_var, in_vars[0])
     elif gtype == "NAND":
         encode_nand_n(cnf, out_var, in_vars)
     elif gtype == "NOR":
@@ -142,16 +153,42 @@ def add_miter(
 ) -> None:
     """
     Enforce output divergence between good and faulty copies.
-    For now, support a single primary output.
+
+    For a single output Y:
+      encode Y_g XOR Y_f directly.
+
+    For multiple outputs Y1..Yn:
+      introduce diff_i ↔ (Yi_g XOR Yi_f) and require OR_i diff_i.
     """
-    if len(outputs) != 1:
-        raise NotImplementedError("Miter currently supports exactly one output")
+    if not outputs:
+        return
 
-    y = outputs[0]
-    yg = new_var(var_map, y + good_suffix)
-    yf = new_var(var_map, y + faulty_suffix)
+    if len(outputs) == 1:
+        y = outputs[0]
+        yg = new_var(var_map, y + good_suffix)
+        yf = new_var(var_map, y + faulty_suffix)
 
-    # yg XOR yf
-    cnf.append([yg, yf])
-    cnf.append([-yg, -yf])
+        # yg XOR yf
+        cnf.append([yg, yf])
+        cnf.append([-yg, -yf])
+        return
+
+    # Multiple outputs: ensure at least one output differs
+    diff_vars: List[int] = []
+
+    for y in outputs:
+        yg = new_var(var_map, y + good_suffix)
+        yf = new_var(var_map, y + faulty_suffix)
+        d = new_var(var_map, f"diff_{y}")
+        diff_vars.append(d)
+
+        # d <-> (yg XOR yf)
+        # (¬yg ∨ ¬yf ∨ ¬d) ∧ (¬yg ∨ yf ∨ d) ∧ (yg ∨ ¬yf ∨ d) ∧ (yg ∨ yf ∨ ¬d)
+        cnf.append([-yg, -yf, -d])
+        cnf.append([-yg, yf, d])
+        cnf.append([yg, -yf, d])
+        cnf.append([yg, yf, -d])
+
+    # At least one diff_i must be true
+    cnf.append(diff_vars)
 

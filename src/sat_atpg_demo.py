@@ -43,7 +43,17 @@ def parse_iscas_verilog(path: str) -> Tuple[List[Gate], List[str], List[str]]:
                 continue
 
             # Gate instance lines: e.g. "nand NAND2_19 (N154, N118, N4);"
-            if line.startswith(("not ", "nand ", "nor ", "and ", "xor ")):
+            if line.startswith(
+                (
+                    "not ",
+                    "nand ",
+                    "nor ",
+                    "and ",
+                    "xor ",
+                    "buf ",
+                    "or ",
+                )
+            ):
                 # Strip trailing semicolon
                 if line.endswith(";"):
                     line = line[:-1]
@@ -75,6 +85,10 @@ def parse_iscas_verilog(path: str) -> Tuple[List[Gate], List[str], List[str]]:
                     gtype = "AND"
                 elif gate_kw == "xor":
                     gtype = "XOR"
+                elif gate_kw == "buf":
+                    gtype = "BUF"
+                elif gate_kw == "or":
+                    gtype = "OR"
                 else:
                     continue
 
@@ -96,8 +110,11 @@ def build_cnf_for_fault(
     cnf += encode_circuit_copy(gates, var_map, suffix="_g")
     cnf += encode_circuit_copy(gates, var_map, suffix="_f")
 
-    # Tie good and faulty primary inputs together so they see the same stimulus.
+    # Tie good and faulty primary inputs together so they see the same stimulus,
+    # except at the fault site itself if the fault is on a primary input.
     for name in primary_inputs:
+        if name == fault_signal:
+            continue
         g = new_var(var_map, name + "_g")
         f = new_var(var_map, name + "_f")
         cnf.append([-g, f])
@@ -111,18 +128,18 @@ def build_cnf_for_fault(
 
 def solve_single_fault_on_c432() -> None:
     this_dir = os.path.dirname(os.path.abspath(__file__))
-    bench_path = os.path.join(this_dir, "..", "Benchmarks", "c432.v")
+    bench_path = os.path.join(this_dir, "..", "Benchmarks", "c17.v")
 
     gates, primary_inputs, primary_outputs = parse_iscas_verilog(bench_path)
 
-    # Example: test N223 stuck-at-0
-    fault_signal = "N223"
-    sa_val = 0
+    # Example: test N1 stuck-at-1 on c17
+    fault_signal = "N19"
+    sa_val = 1
 
     cnf, var_map = build_cnf_for_fault(
         gates,
         primary_inputs,
-        [primary_outputs[0]],
+        primary_outputs,
         fault_signal,
         sa_val,
     )
@@ -137,13 +154,21 @@ def solve_single_fault_on_c432() -> None:
         return
 
     model = solver.get_model()
-    print("SAT — test vector exists for", fault_signal)
+    print("SAT — test vector exists for", fault_signal, f"sa{sa_val}")
     print("Test Vector (primary inputs):")
 
     for name in primary_inputs:
         v = new_var(var_map, name + "_g")
         val = model[v - 1] > 0
-        print(f"{name} = {int(val)}")
+        print(f"  {name} = {int(val)}")
+
+    print("Outputs (good vs faulty):")
+    for y in primary_outputs:
+        yg = new_var(var_map, y + "_g")
+        yf = new_var(var_map, y + "_f")
+        yg_val = model[yg - 1] > 0
+        yf_val = model[yf - 1] > 0
+        print(f"  {y}: good={int(yg_val)} faulty={int(yf_val)}")
 
 
 def generate_fault_list(gates: List[Gate]) -> List[Tuple[str, int]]:
@@ -178,7 +203,7 @@ def run_atpg_all_faults(bench_filename: str) -> Dict[str, float]:
         cnf, var_map = build_cnf_for_fault(
             gates,
             primary_inputs,
-            [primary_outputs[0]],
+            primary_outputs,
             signal,
             sa_val,
         )
@@ -224,4 +249,5 @@ def run_atpg_all_faults(bench_filename: str) -> Dict[str, float]:
 
 
 if __name__ == "__main__":
-    run_atpg_all_faults("c432.v")
+    solve_single_fault_on_c432()
+    # run_atpg_all_faults("c17.v")
