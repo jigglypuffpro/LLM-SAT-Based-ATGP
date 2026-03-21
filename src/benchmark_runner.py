@@ -1,10 +1,12 @@
 import csv
+import argparse
+import os
 from typing import List, Dict
 
 from sat_atpg_demo import run_atpg_all_faults
 
 
-BENCHMARKS: List[str] = [
+BENCHMARKS_FULL: List[str] = [
     "c432.v",
     "c499.v",
     "c880.v",
@@ -16,9 +18,20 @@ BENCHMARKS: List[str] = [
 ]
 
 
-def run_all_benchmarks() -> List[Dict[str, float]]:
+BENCHMARKS_QUICK: List[str] = [
+    "c432.v",
+    "c499.v",
+    "c880.v",
+    "c1355.v",
+    "s298.v",
+    "s344.v",
+]
+
+
+def run_all_benchmarks(benchmarks: List[str]) -> List[Dict[str, float]]:
     results: List[Dict[str, float]] = []
-    for bench in BENCHMARKS:
+    for idx, bench in enumerate(benchmarks, start=1):
+        print(f"[{idx}/{len(benchmarks)}] Running {bench} ...", flush=True)
         res = run_atpg_all_faults(bench)
         results.append(res)
     return results
@@ -99,7 +112,33 @@ def write_csv(results: List[Dict[str, float]], path: str = "benchmark_metrics.cs
 
 
 if __name__ == "__main__":
-    results = run_all_benchmarks()
+    parser = argparse.ArgumentParser(description="Run SAT-ATPG benchmarks and collect metrics.")
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Run only the faster subset (skips c3540 and c6288).",
+    )
+    parser.add_argument(
+        "--bench",
+        action="append",
+        default=[],
+        help="Run only selected benchmark(s), e.g. --bench c432.v --bench c880.v",
+    )
+    parser.add_argument(
+        "--csv",
+        default=os.path.join(os.path.dirname(__file__), "..", "benchmark_metrics.csv"),
+        help="Output CSV path.",
+    )
+    args = parser.parse_args()
+
+    if args.bench:
+        benchmarks = args.bench
+    elif args.quick:
+        benchmarks = BENCHMARKS_QUICK
+    else:
+        benchmarks = BENCHMARKS_FULL
+
+    results = run_all_benchmarks(benchmarks)
     print_results_table(results)
-    write_csv(results)
+    write_csv(results, path=args.csv)
 

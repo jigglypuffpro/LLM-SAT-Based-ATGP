@@ -21,27 +21,51 @@ def parse_iscas_verilog(path: str) -> Tuple[List[Gate], List[str], List[str]]:
     primary_inputs: List[str] = []
     primary_outputs: List[str] = []
 
+    pending_decl_kind = None  # "input" or "output"
+    pending_decl_buf = ""
+
+    def _flush_decl(kind: str, buf: str) -> None:
+        names = [n.strip() for n in buf.split(",") if n.strip()]
+        if kind == "input":
+            primary_inputs.extend(names)
+        elif kind == "output":
+            primary_outputs.extend(names)
+
     with open(path, "r") as f:
         for raw_line in f:
             line = raw_line.strip()
             if not line or line.startswith("//"):
                 continue
 
+            # Continue parsing a multiline input/output declaration until ';'
+            if pending_decl_kind is not None:
+                done = line.endswith(";")
+                chunk = line[:-1] if done else line
+                pending_decl_buf += " " + chunk
+                if done:
+                    _flush_decl(pending_decl_kind, pending_decl_buf)
+                    pending_decl_kind = None
+                    pending_decl_buf = ""
+                continue
+
             if line.startswith("input "):
-                # input N1,N4,...;
-                line = line[len("input ") :]
-                if line.endswith(";"):
-                    line = line[:-1]
-                names = [n.strip() for n in line.split(",") if n.strip()]
-                primary_inputs.extend(names)
+                buf = line[len("input ") :]
+                done = buf.endswith(";")
+                if done:
+                    _flush_decl("input", buf[:-1])
+                else:
+                    pending_decl_kind = "input"
+                    pending_decl_buf = buf
                 continue
 
             if line.startswith("output "):
-                line = line[len("output ") :]
-                if line.endswith(";"):
-                    line = line[:-1]
-                names = [n.strip() for n in line.split(",") if n.strip()]
-                primary_outputs.extend(names)
+                buf = line[len("output ") :]
+                done = buf.endswith(";")
+                if done:
+                    _flush_decl("output", buf[:-1])
+                else:
+                    pending_decl_kind = "output"
+                    pending_decl_buf = buf
                 continue
 
             # Gate instance lines: e.g. "nand NAND2_19 (N154, N118, N4);"
@@ -96,6 +120,9 @@ def parse_iscas_verilog(path: str) -> Tuple[List[Gate], List[str], List[str]]:
 
                 gates.append((gtype, out_name, in_names))
 
+    # Deduplicate while preserving declaration order.
+    primary_inputs = list(dict.fromkeys(primary_inputs))
+    primary_outputs = list(dict.fromkeys(primary_outputs))
     return gates, primary_inputs, primary_outputs
 
 
@@ -240,7 +267,8 @@ def build_cnf_for_fault(
 
     cnf: CNF = []
     cnf += encode_circuit_copy(gates, var_map, suffix="_g")
-    cnf += encode_circuit_copy(gates, var_map, suffix="_f")
+    # In the faulty copy, disconnect the fault site from its original driver.
+    cnf += encode_circuit_copy(gates, var_map, suffix="_f", skip_outputs=[fault_signal])
 
     # If Yosys JSON includes literal constants, force them.
     for suffix in ("_g", "_f"):

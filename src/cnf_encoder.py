@@ -55,14 +55,14 @@ def encode_buf(cnf: CNF, out: int, a: int) -> None:
 def encode_nand_n(cnf: CNF, out: int, inputs: List[int]) -> None:
     # out <-> NAND over inputs = NOT(AND)
     # For y = ¬(x1 ∧ ... ∧ xn), correct CNF is:
-    # (¬y ∨ ¬x1 ∨ ... ∨ ¬xn) ∧ ∧i (¬xi ∨ y)
+    # (¬y ∨ ¬x1 ∨ ... ∨ ¬xn) ∧ ∧i (xi ∨ y)
     if len(inputs) == 0:
         return
     # (¬y ∨ ¬x1 ∨ ... ∨ ¬xn)
     cnf.append([-out] + [-(x) for x in inputs])
-    # (¬xi ∨ y) for all i
+    # (xi ∨ y) for all i
     for x in inputs:
-        cnf.append([-x, out])
+        cnf.append([x, out])
 
 
 def encode_nor_n(cnf: CNF, out: int, inputs: List[int]) -> None:
@@ -123,9 +123,14 @@ def encode_circuit_copy(
     gates: List[Gate],
     var_map: Dict[str, int],
     suffix: str,
+    skip_outputs: List[str] | None = None,
 ) -> CNF:
     cnf: CNF = []
+    skip_set = set(skip_outputs or [])
     for gate in gates:
+        _gtype, out_name, _in_names = gate
+        if out_name in skip_set:
+            continue
         encode_gate(cnf, gate, var_map, suffix)
     return cnf
 
@@ -183,11 +188,13 @@ def add_miter(
         diff_vars.append(d)
 
         # d <-> (yg XOR yf)
-        # (¬yg ∨ ¬yf ∨ ¬d) ∧ (¬yg ∨ yf ∨ d) ∧ (yg ∨ ¬yf ∨ d) ∧ (yg ∨ yf ∨ ¬d)
-        cnf.append([-yg, -yf, -d])
-        cnf.append([-yg, yf, d])
-        cnf.append([yg, -yf, d])
+        # Correct CNF:
+        # ( yg ∨  yf ∨ ¬d) ∧ (¬yg ∨ ¬yf ∨ ¬d)
+        # ( yg ∨ ¬yf ∨  d) ∧ (¬yg ∨  yf ∨  d)
         cnf.append([yg, yf, -d])
+        cnf.append([-yg, -yf, -d])
+        cnf.append([yg, -yf, d])
+        cnf.append([-yg, yf, d])
 
     # At least one diff_i must be true
     cnf.append(diff_vars)
