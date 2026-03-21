@@ -1,6 +1,8 @@
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 import os
 import time
+import json
+import re
 
 from pysat.solvers import Minisat22
 
@@ -97,6 +99,136 @@ def parse_iscas_verilog(path: str) -> Tuple[List[Gate], List[str], List[str]]:
     return gates, primary_inputs, primary_outputs
 
 
+def _yosys_bit_name(bit: Any, bit_to_name: Dict[int, str]) -> str:
+    if isinstance(bit, int):
+        if bit not in bit_to_name:
+            bit_to_name[bit] = f"n{bit}"
+        return bit_to_name[bit]
+    # Constants may appear as strings like "0" / "1" in JSON.
+    if bit == "0":
+        return "__const0"
+    if bit == "1":
+        return "__const1"
+    raise ValueError(f"Unsupported bit token in Yosys JSON: {bit}")
+
+
+def _normalize_cell_type(cell_type: str) -> str:
+    # Handle Yosys internal forms like $_AND_ / $_NOT_ first
+    direct_map = {
+        "$_AND_": "AND",
+        "$_OR_": "OR",
+        "$_NAND_": "NAND",
+        "$_NOR_": "NOR",
+        "$_XOR_": "XOR",
+        "$_NOT_": "NOT",
+        "$_BUF_": "BUF",
+    }
+    if cell_type in direct_map:
+        return direct_map[cell_type]
+
+    # Heuristic mapping for common tech-mapped library names (e.g. NAND2X1, INVX1)
+    utype = cell_type.upper()
+    if "XNOR" in utype:
+        raise NotImplementedError(f"Cell type {cell_type} uses XNOR, unsupported currently")
+    if "NAND" in utype:
+        return "NAND"
+    if "NOR" in utype:
+        return "NOR"
+    if "XOR" in utype:
+        return "XOR"
+    if "AND" in utype:
+        return "AND"
+    if re.search(r"(^|_)OR", utype) or utype.startswith("OR"):
+        return "OR"
+    if "INV" in utype or "NOT" in utype:
+        return "NOT"
+    if "BUF" in utype:
+        return "BUF"
+
+    raise NotImplementedError(f"Unsupported cell type in Yosys JSON: {cell_type}")
+
+
+def parse_yosys_json(path: str) -> Tuple[List[Gate], List[str], List[str]]:
+    with open(path, "r") as f:
+        data = json.load(f)
+
+    modules = data.get("modules", {})
+    if not modules:
+        raise ValueError("No modules found in Yosys JSON")
+
+    # Pick the first module for now
+    module_name = next(iter(modules))
+    mod = modules[module_name]
+
+    bit_to_name: Dict[int, str] = {}
+
+    # Build readable names for bit IDs from netnames
+    for net_name, net_obj in mod.get("netnames", {}).items():
+        bits = net_obj.get("bits", [])
+        if len(bits) == 1 and isinstance(bits[0], int):
+            bit_to_name.setdefault(bits[0], net_name)
+        else:
+            for idx, b in enumerate(bits):
+                if isinstance(b, int):
+                    bit_to_name.setdefault(b, f"{net_name}[{idx}]")
+
+    primary_inputs: List[str] = []
+    primary_outputs: List[str] = []
+
+    for port_name, port_obj in mod.get("ports", {}).items():
+        direction = port_obj.get("direction")
+        bits = port_obj.get("bits", [])
+        expanded_names = [_yosys_bit_name(b, bit_to_name) for b in bits]
+        if direction == "input":
+            primary_inputs.extend(expanded_names)
+        elif direction == "output":
+            primary_outputs.extend(expanded_names)
+
+    gates: List[Gate] = []
+    output_pin_priority = ["Y", "ZN", "Z", "Q", "QN", "OUT", "O", "X"]
+
+    for _cell_name, cell_obj in mod.get("cells", {}).items():
+        cell_type = cell_obj.get("type", "")
+        gtype = _normalize_cell_type(cell_type)
+        conns = cell_obj.get("connections", {})
+        if not conns:
+            continue
+
+        out_pin = None
+        for p in output_pin_priority:
+            if p in conns:
+                out_pin = p
+                break
+        if out_pin is None:
+            # Fallback: choose last pin alphabetically as output candidate.
+            out_pin = sorted(conns.keys())[-1]
+
+        out_bits = conns.get(out_pin, [])
+        if len(out_bits) != 1:
+            raise ValueError(f"Cell output {out_pin} is not single-bit in {cell_type}")
+        out_name = _yosys_bit_name(out_bits[0], bit_to_name)
+
+        in_names: List[str] = []
+        for pin, bits in conns.items():
+            if pin == out_pin:
+                continue
+            for b in bits:
+                in_names.append(_yosys_bit_name(b, bit_to_name))
+
+        gates.append((gtype, out_name, in_names))
+
+    # Ensure deterministic ordering and remove duplicates while preserving order.
+    primary_inputs = list(dict.fromkeys(primary_inputs))
+    primary_outputs = list(dict.fromkeys(primary_outputs))
+    return gates, primary_inputs, primary_outputs
+
+
+def parse_netlist(path: str) -> Tuple[List[Gate], List[str], List[str]]:
+    if path.lower().endswith(".json"):
+        return parse_yosys_json(path)
+    return parse_iscas_verilog(path)
+
+
 def build_cnf_for_fault(
     gates: List[Gate],
     primary_inputs: List[str],
@@ -109,6 +241,13 @@ def build_cnf_for_fault(
     cnf: CNF = []
     cnf += encode_circuit_copy(gates, var_map, suffix="_g")
     cnf += encode_circuit_copy(gates, var_map, suffix="_f")
+
+    # If Yosys JSON includes literal constants, force them.
+    for suffix in ("_g", "_f"):
+        c0 = new_var(var_map, "__const0" + suffix)
+        c1 = new_var(var_map, "__const1" + suffix)
+        cnf.append([-c0])
+        cnf.append([c1])
 
     # Tie good and faulty primary inputs together so they see the same stimulus,
     # except at the fault site itself if the fault is on a primary input.
@@ -128,12 +267,12 @@ def build_cnf_for_fault(
 
 def solve_single_fault_on_c432() -> None:
     this_dir = os.path.dirname(os.path.abspath(__file__))
-    bench_path = os.path.join(this_dir, "..", "Benchmarks", "c17.v")
+    bench_path = os.path.join(this_dir, "..", "Benchmarks", "c432.v")
 
-    gates, primary_inputs, primary_outputs = parse_iscas_verilog(bench_path)
+    gates, primary_inputs, primary_outputs = parse_netlist(bench_path)
 
     # Example: test N1 stuck-at-1 on c17
-    fault_signal = "N19"
+    fault_signal = "N112"
     sa_val = 1
 
     cnf, var_map = build_cnf_for_fault(
@@ -189,7 +328,7 @@ def run_atpg_all_faults(bench_filename: str) -> Dict[str, float]:
     this_dir = os.path.dirname(os.path.abspath(__file__))
     bench_path = os.path.join(this_dir, "..", "Benchmarks", bench_filename)
 
-    gates, primary_inputs, primary_outputs = parse_iscas_verilog(bench_path)
+    gates, primary_inputs, primary_outputs = parse_netlist(bench_path)
     faults = generate_fault_list(gates)
 
     detected = 0
