@@ -295,12 +295,12 @@ def build_cnf_for_fault(
 
 def solve_single_fault_on_c432() -> None:
     this_dir = os.path.dirname(os.path.abspath(__file__))
-    bench_path = os.path.join(this_dir, "..", "Benchmarks", "c432.v")
+    bench_path = os.path.join(this_dir, "..", "Benchmarks", "c6288.v")
 
     gates, primary_inputs, primary_outputs = parse_netlist(bench_path)
 
     # Example: test N1 stuck-at-1 on c17
-    fault_signal = "N112"
+    fault_signal = "N1647"
     sa_val = 1
 
     cnf, var_map = build_cnf_for_fault(
